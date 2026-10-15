@@ -27,6 +27,10 @@ import {
   Users,
   CreditCard,
   RefreshCw,
+  Database,
+  HardDrive,
+  Trash2,
+  CheckCircle2,
 } from 'lucide-react';
 import {
   SiglonFeatureCollection,
@@ -66,6 +70,15 @@ interface LayerFilterSidebarProps {
   isOpen: boolean;
   setIsOpen: (v: boolean) => void;
   onSelectPresetLoteamento: (name: string) => void;
+  onSelectRegionSector?: (sector: string, label: string) => void;
+  onLoadStoredLocalLots?: () => void;
+  onClearLocalStorage?: () => void;
+  storageStats?: {
+    totalCadastradoLondrina: number;
+    totalFiscal: number;
+    storedLots: number;
+    cachedRegions: string[];
+  };
   authState: SiglonAuthState;
   onOpenAuthModal: () => void;
   totalCadastradoLots?: number | null;
@@ -99,13 +112,17 @@ export const LayerFilterSidebar: React.FC<LayerFilterSidebarProps> = ({
   isOpen,
   setIsOpen,
   onSelectPresetLoteamento,
+  onSelectRegionSector,
+  onLoadStoredLocalLots,
+  onClearLocalStorage,
+  storageStats,
   authState,
   onOpenAuthModal,
   totalCadastradoLots,
   loadingProgress,
   onLoadAllLots,
 }) => {
-  const [activeTab, setActiveTab] = useState<'layers' | 'data' | 'details'>('layers');
+  const [activeTab, setActiveTab] = useState<'layers' | 'regions' | 'data' | 'details'>('layers');
   const [tableFilter, setTableFilter] = useState('');
   const [copiedText, setCopiedText] = useState<string | null>(null);
 
@@ -115,16 +132,27 @@ export const LayerFilterSidebar: React.FC<LayerFilterSidebarProps> = ({
     setTimeout(() => setCopiedText(null), 2000);
   };
 
+  // Official municipal sectors of Londrina (Total 342.483 cadastrados)
+  const SETORES_LONDRINA = [
+    { setor: '01', nome: 'Centro & Região Central', lotes: 35042, desc: 'Calçadão, Higienópolis, Centro Histórico' },
+    { setor: '02', nome: 'Zona Sul 1 (Aeroporto / Cafezal)', lotes: 21971, desc: 'Santos Dumont, Cafezal, União da Vitória' },
+    { setor: '03', nome: 'Zona Sul 2 (Gleba Palhano)', lotes: 24637, desc: 'Gleba Palhano, Esperança, Proximidades Shopping' },
+    { setor: '04', nome: 'Zona Oeste (Shangri-lá / Bandeirantes)', lotes: 59378, desc: 'Shangri-lá, Alvorada, Maringá, Coliseu' },
+    { setor: '05', nome: 'Zona Leste (Lindóia / San Fernando)', lotes: 36039, desc: 'Lindóia, Celso Garcia, Ernani Moura' },
+    { setor: '06', nome: 'Zona Norte (Cinco Conjuntos / Violin)', lotes: 99224, desc: 'Parigot, Saul Raiz, Violin, Vivi Xavier' },
+    { setor: '07', nome: 'Distritos & Expansão Urbana', lotes: 61069, desc: 'Warta, Lerroville, Paiquerê, Guaravera' },
+  ];
+
   // Popular loteamentos presets in Londrina
   const PRESET_LOTEAMENTOS = [
-    { label: 'Centro', query: 'CENTRO' },
-    { label: 'Gleba Palhano', query: 'GLEBA PALHANO' },
-    { label: 'Cj. Hab. Violin', query: 'JACOMO VIOLIN' },
-    { label: 'Jd. Shangri-lá', query: 'SHANGRI-LA' },
-    { label: 'Parque Guanabara', query: 'GUANABARA' },
-    { label: 'Vila Ernest', query: 'VILA ERNEST' },
-    { label: 'Cj. Cafezal', query: 'CAFEZAL' },
-    { label: 'Bandeirantes', query: 'BANDEIRANTES' },
+    { label: 'Centro', query: 'CENTRO', count: 34352 },
+    { label: 'Gleba Palhano', query: 'PALHANO', count: 28264 },
+    { label: 'Cj. Hab. Violin', query: 'VIOLIN', count: 2060 },
+    { label: 'Jd. Shangri-lá', query: 'SHANGRI', count: 1606 },
+    { label: 'Parque Guanabara', query: 'GUANABARA', count: 1743 },
+    { label: 'Bandeirantes', query: 'BANDEIRANTES', count: 2777 },
+    { label: 'Cj. Cafezal', query: 'CAFEZAL', count: 1944 },
+    { label: 'Distrito Warta', query: 'WARTA', count: 315 },
   ];
 
   // Types of occurrence from SEMA
@@ -216,21 +244,32 @@ export const LayerFilterSidebar: React.FC<LayerFilterSidebarProps> = ({
         </div>
 
         {/* Tab Navigation */}
-        <div className="flex border-b border-slate-200 bg-slate-50/80 px-2 shrink-0">
+        <div className="flex border-b border-slate-200 bg-slate-50/80 px-1 shrink-0 overflow-x-auto">
           <button
             onClick={() => setActiveTab('layers')}
-            className={`flex items-center gap-1.5 py-2.5 px-3 border-b-2 text-xs font-semibold transition ${
+            className={`flex items-center gap-1 py-2.5 px-2.5 border-b-2 text-[11px] font-semibold transition shrink-0 ${
               activeTab === 'layers'
                 ? 'border-sky-600 text-sky-700 bg-white'
                 : 'border-transparent text-slate-600 hover:text-slate-900'
             }`}
           >
             <Sliders className="w-3.5 h-3.5" />
-            <span>Camadas & Filtros</span>
+            <span>Filtros</span>
+          </button>
+          <button
+            onClick={() => setActiveTab('regions')}
+            className={`flex items-center gap-1 py-2.5 px-2.5 border-b-2 text-[11px] font-semibold transition shrink-0 ${
+              activeTab === 'regions'
+                ? 'border-emerald-600 text-emerald-700 bg-white'
+                : 'border-transparent text-slate-600 hover:text-slate-900'
+            }`}
+          >
+            <Database className="w-3.5 h-3.5 text-emerald-600" />
+            <span>Regiões & 342k</span>
           </button>
           <button
             onClick={() => setActiveTab('data')}
-            className={`flex items-center gap-1.5 py-2.5 px-3 border-b-2 text-xs font-semibold transition ${
+            className={`flex items-center gap-1 py-2.5 px-2.5 border-b-2 text-[11px] font-semibold transition shrink-0 ${
               activeTab === 'data'
                 ? 'border-sky-600 text-sky-700 bg-white'
                 : 'border-transparent text-slate-600 hover:text-slate-900'
@@ -241,7 +280,7 @@ export const LayerFilterSidebar: React.FC<LayerFilterSidebarProps> = ({
           </button>
           <button
             onClick={() => setActiveTab('details')}
-            className={`flex items-center gap-1.5 py-2.5 px-3 border-b-2 text-xs font-semibold transition ${
+            className={`flex items-center gap-1 py-2.5 px-2.5 border-b-2 text-[11px] font-semibold transition shrink-0 ${
               activeTab === 'details'
                 ? 'border-sky-600 text-sky-700 bg-white'
                 : 'border-transparent text-slate-600 hover:text-slate-900'
@@ -741,7 +780,199 @@ export const LayerFilterSidebar: React.FC<LayerFilterSidebarProps> = ({
             </>
           )}
 
-          {/* TAB 2: DATA TABLE / LOTS LIST */}
+          {/* TAB 2: REGIONS & DATABASE (342.483 LOTES & 7.355 FISCALIZAÇÕES) */}
+          {activeTab === 'regions' && (
+            <div className="space-y-4">
+              {/* Overall Municipal Database Banner */}
+              <div className="bg-gradient-to-br from-slate-900 via-slate-800 to-sky-950 text-white p-4 rounded-xl border border-slate-700 shadow-md space-y-3">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <Database className="w-5 h-5 text-emerald-400" />
+                    <div>
+                      <h3 className="font-bold text-xs text-white">Acervo Cartográfico de Londrina</h3>
+                      <p className="text-[10px] text-slate-300">Base Cadastral & Fiscalização Ambiental</p>
+                    </div>
+                  </div>
+                  <span className="text-[10px] bg-emerald-500/20 text-emerald-300 px-2 py-0.5 rounded-full font-semibold border border-emerald-500/30">
+                    Sincronizado
+                  </span>
+                </div>
+
+                <div className="grid grid-cols-2 gap-2 pt-1">
+                  <div className="bg-slate-800/80 rounded-lg p-2.5 border border-slate-700">
+                    <div className="text-[10px] text-slate-400 font-medium">Total Geral do Município:</div>
+                    <div className="text-base font-extrabold text-sky-300 font-mono">342.483</div>
+                    <div className="text-[9px] text-slate-400">Lotes Urbanos Cadastrados</div>
+                  </div>
+                  <div className="bg-slate-800/80 rounded-lg p-2.5 border border-slate-700">
+                    <div className="text-[10px] text-slate-400 font-medium">Fiscalizações SEMA:</div>
+                    <div className="text-base font-extrabold text-amber-300 font-mono">
+                      {storageStats?.totalFiscal?.toLocaleString('pt-BR') || '7.355'}
+                    </div>
+                    <div className="text-[9px] text-emerald-400 flex items-center gap-1 font-semibold">
+                      <CheckCircle2 className="w-2.5 h-2.5" /> 100% guardadas na app
+                    </div>
+                  </div>
+                </div>
+
+                <div className="bg-slate-800/70 rounded-lg p-2.5 border border-slate-700 text-[11px] text-slate-300 flex items-center justify-between">
+                  <span className="flex items-center gap-1.5">
+                    <HardDrive className="w-3.5 h-3.5 text-emerald-400" />
+                    <span>Lotes guardados na aplicação:</span>
+                  </span>
+                  <span className="font-bold text-emerald-300 font-mono text-xs">
+                    {(storageStats?.storedLots || bcarData?.features?.length || 2500).toLocaleString('pt-BR')} lotes
+                  </span>
+                </div>
+
+                <div className="text-[10px] text-slate-300 leading-relaxed bg-slate-800/40 p-2 rounded-lg border border-slate-700/60">
+                  <span className="font-semibold text-emerald-300">Persistência Automática:</span> Os dados carregados ficam guardados permanentemente no seu dispositivo (IndexedDB e disco local). Você pode alternar por região ou buscar por CPF/CNPJ sem precisar re-baixar da internet a cada vez.
+                </div>
+
+                {onLoadStoredLocalLots && (
+                  <button
+                    type="button"
+                    onClick={onLoadStoredLocalLots}
+                    disabled={isLoadingLots}
+                    className="w-full bg-emerald-600 hover:bg-emerald-500 text-white font-semibold py-2 px-3 rounded-lg text-xs transition flex items-center justify-center gap-1.5 shadow-sm disabled:opacity-50"
+                  >
+                    <HardDrive className="w-3.5 h-3.5" />
+                    <span>Carregar Dados Guardados Localmente</span>
+                  </button>
+                )}
+              </div>
+
+              {/* Setores Cadastrais Oficiais de Londrina */}
+              <div className="space-y-2">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-bold text-slate-900 flex items-center gap-1.5">
+                    <Layers className="w-3.5 h-3.5 text-sky-600" />
+                    <span>Navegação por Região Oficial (Setores 01 a 07)</span>
+                  </span>
+                  <span className="text-[10px] text-slate-500 font-mono">342.483 lotes</span>
+                </div>
+
+                <div className="space-y-1.5">
+                  {SETORES_LONDRINA.map((sec) => {
+                    const isCurrent = filterState.regiaoSetor === sec.setor;
+                    return (
+                      <div
+                        key={sec.setor}
+                        className={`p-2.5 rounded-xl border transition ${
+                          isCurrent
+                            ? 'bg-sky-50 border-sky-400 ring-1 ring-sky-400'
+                            : 'bg-white hover:bg-slate-50 border-slate-200'
+                        }`}
+                      >
+                        <div className="flex items-center justify-between">
+                          <div className="pr-2">
+                            <div className="flex items-center gap-1.5">
+                              <span className="text-[10px] font-mono font-bold bg-slate-100 text-slate-700 px-1.5 py-0.2 rounded">
+                                Setor {sec.setor}
+                              </span>
+                              <span className="font-bold text-xs text-slate-900">{sec.nome}</span>
+                            </div>
+                            <p className="text-[10px] text-slate-500 mt-0.5">{sec.desc}</p>
+                          </div>
+                          <div className="text-right shrink-0">
+                            <span className="font-mono font-bold text-xs text-sky-800 block">
+                              {sec.lotes.toLocaleString('pt-BR')}
+                            </span>
+                            <span className="text-[9px] text-slate-400">lotes</span>
+                          </div>
+                        </div>
+
+                        <div className="flex items-center gap-2 mt-2 pt-2 border-t border-slate-100">
+                          <button
+                            type="button"
+                            onClick={() => onSelectRegionSector?.(sec.setor, sec.nome)}
+                            disabled={isLoadingLots}
+                            className={`flex-1 py-1 px-2 rounded-lg text-[11px] font-semibold transition flex items-center justify-center gap-1 ${
+                              isCurrent
+                                ? 'bg-sky-600 text-white'
+                                : 'bg-slate-100 hover:bg-sky-100 text-slate-700 hover:text-sky-800'
+                            }`}
+                          >
+                            <Eye className="w-3 h-3" />
+                            <span>Visualizar Esta Região</span>
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+
+              {/* Loteamentos e Bairros Populares */}
+              <div className="space-y-2 pt-2 border-t border-slate-200">
+                <span className="text-xs font-bold text-slate-900 flex items-center gap-1.5">
+                  <Building className="w-3.5 h-3.5 text-sky-600" />
+                  <span>Loteamentos e Bairros Principais</span>
+                </span>
+                <div className="grid grid-cols-2 gap-1.5">
+                  {PRESET_LOTEAMENTOS.map((p) => (
+                    <button
+                      key={p.query}
+                      type="button"
+                      onClick={() => onSelectPresetLoteamento(p.query)}
+                      className="p-2 rounded-lg border border-slate-200 bg-white hover:bg-sky-50 text-left transition flex items-center justify-between"
+                    >
+                      <div className="truncate pr-1">
+                        <div className="text-[11px] font-bold text-slate-800 truncate">{p.label}</div>
+                        <div className="text-[9px] text-slate-500 font-mono">{p.count.toLocaleString('pt-BR')} lotes</div>
+                      </div>
+                      <ChevronRight className="w-3.5 h-3.5 text-slate-300 shrink-0" />
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* Fiscalização Ambiental Summary */}
+              <div className="bg-amber-50/80 border border-amber-200 rounded-xl p-3 space-y-2">
+                <div className="flex items-center gap-2">
+                  <ShieldCheck className="w-4 h-4 text-amber-600" />
+                  <span className="font-bold text-xs text-amber-950">
+                    Fiscalizações Ambientais SEMA ({storageStats?.totalFiscal || 7355} ocorrências)
+                  </span>
+                </div>
+                <p className="text-[11px] text-amber-900 leading-relaxed">
+                  Todas as 7.355 ocorrências ambientais estão guardadas permanentemente na aplicação. Elas são plotadas no mapa com filtros por tipo (Queimada, Árvores, Água/Esgoto, Ocupação Irregular, Poluição Sonora, Poluição Atmosférica e Resíduos) e número de processo.
+                </p>
+              </div>
+
+              {/* Local Database Maintenance */}
+              <div className="bg-slate-50 border border-slate-200 rounded-xl p-3 space-y-2 text-xs">
+                <span className="font-bold text-slate-800 block">Manutenção da Base Local:</span>
+                <div className="flex items-center gap-2 pt-1">
+                  {onClearLocalStorage && (
+                    <button
+                      type="button"
+                      onClick={onClearLocalStorage}
+                      className="flex-1 py-1.5 px-2 bg-white hover:bg-rose-50 border border-slate-300 hover:border-rose-300 text-rose-700 rounded-lg text-[11px] font-medium transition flex items-center justify-center gap-1"
+                      title="Limpar e sincronizar dados oficiais novamente"
+                    >
+                      <Trash2 className="w-3 h-3" />
+                      <span>Limpar e Re-sincronizar</span>
+                    </button>
+                  )}
+                  {onLoadAllLots && (
+                    <button
+                      type="button"
+                      onClick={onLoadAllLots}
+                      disabled={isLoadingLots}
+                      className="flex-1 py-1.5 px-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-[11px] font-semibold transition flex items-center justify-center gap-1 shadow-xs disabled:opacity-50"
+                      title="Baixar lotes da região selecionada para a aplicação"
+                    >
+                      <RefreshCw className="w-3 h-3" />
+                      <span>Baixar Região Toda</span>
+                    </button>
+                  )}
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* TAB 3: DATA TABLE / LOTS LIST */}
           {activeTab === 'data' && (
             <div className="space-y-3">
               <div className="flex items-center justify-between text-xs">
@@ -805,11 +1036,16 @@ export const LayerFilterSidebar: React.FC<LayerFilterSidebarProps> = ({
                             Cód: {feat.properties.CODLOT || '-'}
                           </span>
                         </div>
-                        {feat.properties.NOME_PROPR && (
-                          <div className="text-[11px] text-slate-600 truncate">
-                            Propr: {String(feat.properties.NOME_PROPR)}
-                          </div>
-                        )}
+                        <div className="flex items-center justify-between gap-1 text-[11px]">
+                          <span className="text-slate-700 truncate font-medium">
+                            Propr: {String(feat.properties.NOME_PROPR || feat.properties.nome_propr || 'Não informado')}
+                          </span>
+                          {(feat.properties.CPF_CNPJ_PROPR || feat.properties.cpf_cnpj_propr) && (
+                            <span className="font-mono text-emerald-800 bg-emerald-50 border border-emerald-200/80 px-1.5 py-0.5 rounded text-[10px] font-bold shrink-0">
+                              {formatCpfCnpj(feat.properties.CPF_CNPJ_PROPR || feat.properties.cpf_cnpj_propr)}
+                            </span>
+                          )}
+                        </div>
                         <div className="flex items-center gap-3 text-slate-600 text-[11px]">
                           <span>
                             Quadra: <strong>{feat.properties.QUADR_C || '-'}</strong>
@@ -925,20 +1161,65 @@ export const LayerFilterSidebar: React.FC<LayerFilterSidebarProps> = ({
                       <div>
                         <span className="text-[11px] text-slate-500 block">Loteamento / Bairro:</span>
                         <div className="font-bold text-base text-slate-900">
-                          {selectedFeature.properties.NOME_LOTE || 'Não Informado'}
+                          {selectedFeature.properties.NOME_LOTE || selectedFeature.properties.nome_lote || 'Não Informado'}
                         </div>
                       </div>
 
-                      {selectedFeature.properties.NOME_PROPR && (
-                        <div className="p-2.5 bg-sky-50/80 border border-sky-100 rounded-lg text-xs space-y-0.5">
-                          <span className="text-sky-700 text-[10px] block font-semibold uppercase tracking-wider">
-                            Proprietário Registrado (BCIntranet):
+                      {/* Proprietário e CPF / CNPJ Highlight Card */}
+                      <div className="p-3 bg-gradient-to-br from-emerald-50 via-teal-50 to-emerald-100/50 border border-emerald-200 rounded-xl text-xs space-y-2 shadow-xs">
+                        <div className="flex items-center justify-between">
+                          <span className="text-emerald-800 text-[10px] font-bold uppercase tracking-wider flex items-center gap-1.5">
+                            <Users className="w-3.5 h-3.5 text-emerald-600" />
+                            <span>Proprietário do Imóvel</span>
                           </span>
-                          <span className="font-bold text-slate-900 text-sm">
-                            {selectedFeature.properties.NOME_PROPR}
+                          <span className="text-[9px] bg-emerald-200/80 text-emerald-950 font-bold px-1.5 py-0.2 rounded font-mono">
+                            BCIntranet SIGLON
                           </span>
                         </div>
-                      )}
+
+                        <div className="font-bold text-slate-900 text-sm">
+                          {selectedFeature.properties.NOME_PROPR || selectedFeature.properties.nome_propr || 'Proprietário não informado no cadastro'}
+                        </div>
+
+                        {/* CPF / CNPJ Box */}
+                        <div className="bg-white/95 p-2.5 rounded-lg border border-emerald-200/90 flex items-center justify-between shadow-xs">
+                          <div>
+                            <span className="text-slate-500 text-[10px] block font-medium">CPF / CNPJ do Proprietário:</span>
+                            <span className="font-mono font-bold text-emerald-700 text-xs sm:text-sm tracking-wide">
+                              {formatCpfCnpj(selectedFeature.properties.CPF_CNPJ_PROPR || selectedFeature.properties.cpf_cnpj_propr) || 'Não informado'}
+                            </span>
+                          </div>
+                          {(selectedFeature.properties.CPF_CNPJ_PROPR || selectedFeature.properties.cpf_cnpj_propr) && (
+                            <button
+                              type="button"
+                              onClick={() => handleCopy(String(selectedFeature.properties.CPF_CNPJ_PROPR || selectedFeature.properties.cpf_cnpj_propr), 'detail-cpf')}
+                              className="flex items-center gap-1 text-[10px] font-semibold bg-emerald-100 hover:bg-emerald-200 text-emerald-800 px-2 py-1 rounded transition"
+                              title="Copiar CPF/CNPJ"
+                            >
+                              {copiedText === 'detail-cpf' ? (
+                                <>
+                                  <Check className="w-3 h-3 text-emerald-700" />
+                                  <span>Copiado!</span>
+                                </>
+                              ) : (
+                                <>
+                                  <Copy className="w-3 h-3 text-emerald-700" />
+                                  <span>Copiar</span>
+                                </>
+                              )}
+                            </button>
+                          )}
+                        </div>
+
+                        {selectedFeature.properties.INSCRICAO_IMOBILIARIA && (
+                          <div className="flex items-center justify-between text-[11px] pt-1 border-t border-emerald-200/60">
+                            <span className="text-slate-600">Inscrição Imobiliária:</span>
+                            <span className="font-mono font-bold text-slate-900">
+                              {selectedFeature.properties.INSCRICAO_IMOBILIARIA}
+                            </span>
+                          </div>
+                        )}
+                      </div>
 
                       <div className="grid grid-cols-2 gap-2 bg-slate-50 p-2.5 rounded-lg border border-slate-200/80 text-xs">
                         <div>

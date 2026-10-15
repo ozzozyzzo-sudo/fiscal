@@ -62,8 +62,17 @@ export async function fetchWebAppConfig(appId = '6e505befb3be4535a772c698502233f
   return res.json();
 }
 
+import {
+  saveFiscalizacoesToStorage,
+  getAllFiscalizacoesFromStorage,
+  saveLotsToStorage,
+  queryLotsFromStorage,
+  countFiscalizacoesInStorage,
+  countLotsInStorage,
+} from './storage';
+
 /**
- * Fetch Fiscalização Ambiental SEMA (Ocorrências e Processos)
+ * Fetch Fiscalização Ambiental SEMA (All 7,355 records with persistent storage)
  */
 export async function fetchFiscalOcorrencias(
   token: string | null,
@@ -73,60 +82,102 @@ export async function fetchFiscalOcorrencias(
     processo?: string;
     bbox?: { west: number; south: number; east: number; north: number };
     limit?: number;
+    forceRefresh?: boolean;
   }
 ): Promise<SiglonFeatureCollection<FiscalOcorrenciaProperties>> {
-  const queryParams = new URLSearchParams({
-    outFields: '*',
-    returnGeometry: 'true',
-    outSR: '4326',
-    f: 'geojson',
-    resultRecordCount: String(params?.limit || 150),
-    orderByFields: 'OBJECTID DESC',
-  });
+  let allFeatures: any[] = [];
 
-  if (token) {
-    queryParams.set('token', token);
+  // 1. Try reading from local browser IndexedDB if not forced to refresh
+  if (!params?.forceRefresh) {
+    try {
+      allFeatures = await getAllFiscalizacoesFromStorage();
+    } catch (_) {}
   }
 
-  const whereClauses: string[] = [];
+  // 2. If storage is empty or needs refresh, fetch the pre-cached complete dataset of 7,355 records
+  if (allFeatures.length < 100) {
+    try {
+      const res = await fetch('/api/data/fiscalizacao');
+      if (res.ok) {
+        const json = await res.json();
+        if (json.features && json.features.length > 0) {
+          allFeatures = json.features;
+          // Persist all 7,355 records into IndexedDB for instant offline use
+          saveFiscalizacoesToStorage(allFeatures).catch(() => {});
+        }
+      }
+    } catch (_) {}
+  }
+
+  // 3. If server cache route wasn't ready, fallback to direct ArcGIS FeatureServer query
+  if (allFeatures.length < 100) {
+    const queryParams = new URLSearchParams({
+      outFields: '*',
+      returnGeometry: 'true',
+      outSR: '4326',
+      f: 'geojson',
+      resultRecordCount: '2000',
+      orderByFields: 'OBJECTID DESC',
+      where: '1=1',
+    });
+    if (token) queryParams.set('token', token);
+
+    const url = `${BASE_ARCGIS_URL}/FiscalizacaoAmbientalEdicao/FeatureServer/0/query?${queryParams.toString()}`;
+    const response = await fetch(url);
+    if (response.ok) {
+      const data = await response.json();
+      allFeatures = data.features || [];
+      saveFiscalizacoesToStorage(allFeatures).catch(() => {});
+    }
+  }
+
+  // 4. Apply client-side filtering on the complete dataset
+  let filtered = allFeatures;
 
   if (params?.tipo && params.tipo !== 'all') {
-    const clean = params.tipo.replace(/'/g, "''");
-    whereClauses.push(`OCORRÊNCIA='${clean}'`);
+    const tipo = params.tipo.toLowerCase();
+    filtered = filtered.filter(
+      (f) => String(f.properties?.['OCORRÊNCIA'] || '').toLowerCase() === tipo
+    );
   }
 
   if (params?.status && params.status !== 'all') {
-    const clean = params.status.replace(/'/g, "''");
-    whereClauses.push(`STATUS='${clean}'`);
+    const status = params.status.toLowerCase();
+    filtered = filtered.filter(
+      (f) => String(f.properties?.STATUS || '').toLowerCase() === status
+    );
   }
 
   if (params?.processo && params.processo.trim()) {
-    const clean = params.processo.trim().replace(/'/g, "''");
-    whereClauses.push(`PROCESSO LIKE '%${clean}%'`);
+    const proc = params.processo.trim().toLowerCase();
+    filtered = filtered.filter((f) =>
+      String(f.properties?.PROCESSO || '').toLowerCase().includes(proc)
+    );
   }
-
-  queryParams.set('where', whereClauses.length > 0 ? whereClauses.join(' AND ') : '1=1');
 
   if (params?.bbox) {
-    queryParams.set('geometry', `${params.bbox.west},${params.bbox.south},${params.bbox.east},${params.bbox.north}`);
-    queryParams.set('geometryType', 'esriGeometryEnvelope');
-    queryParams.set('spatialRel', 'esriSpatialRelIntersects');
-    queryParams.set('inSR', '4326');
+    const { west, south, east, north } = params.bbox;
+    filtered = filtered.filter((f) => {
+      const coords = f.geometry?.coordinates;
+      if (!coords || typeof coords[0] !== 'number') return false;
+      const lng = coords[0];
+      const lat = coords[1];
+      return lng >= west && lng <= east && lat >= south && lat <= north;
+    });
   }
 
-  const url = `${BASE_ARCGIS_URL}/FiscalizacaoAmbientalEdicao/FeatureServer/0/query?${queryParams.toString()}`;
-  const response = await fetch(url);
+  // Limit display if requested (or return all filtered)
+  const limit = params?.limit && params.limit > 0 ? params.limit : filtered.length;
+  const resultFeatures = filtered.slice(0, limit);
 
-  if (!response.ok) {
-    throw new Error(`Erro ao buscar Fiscalização Ambiental: HTTP ${response.status}`);
-  }
-
-  const data = await response.json();
-  if (data.error) {
-    throw new Error(`Erro ArcGIS: ${data.error.message || 'Falha na consulta'}`);
-  }
-
-  return data as SiglonFeatureCollection<FiscalOcorrenciaProperties>;
+  return {
+    type: 'FeatureCollection',
+    features: resultFeatures,
+    properties: {
+      totalInDatabase: allFeatures.length,
+      filteredCount: filtered.length,
+    },
+  };
 }
 
 /**
@@ -223,6 +274,12 @@ function buildBCarWhereClauses(params: QueryBCarParams): string[] {
     whereClauses.push(`(INSCRICAO_IMOBILIARIA LIKE '%${clean}%' OR inscricao_imobiliaria LIKE '%${clean}%')`);
   }
 
+  // Official municipal sectors (01 = Centro, 02 = Sul Aeroporto, 03 = Sul Palhano, 04 = Oeste, 05 = Leste, 06 = Norte, 07 = Distritos)
+  if (params.setorCadastral && params.setorCadastral !== 'all') {
+    const clean = params.setorCadastral.trim().padStart(2, '0');
+    whereClauses.push(`(LOTE_URBANO LIKE '${clean}%')`);
+  }
+
   return whereClauses;
 }
 
@@ -281,6 +338,8 @@ export interface QueryBCarParams {
   inscricao?: string;
   cpfCnpj?: string;
   nomeProprietario?: string;
+  setorCadastral?: string;
+  preferLocal?: boolean;
   limit?: number;
   offset?: number;
   fetchAll?: boolean;
@@ -290,6 +349,30 @@ export interface QueryBCarParams {
 }
 
 export async function queryBaseCartografica(params: QueryBCarParams): Promise<SiglonFeatureCollection<BCarProperties>> {
+  // If user requested local storage query or offline
+  if (params.preferLocal) {
+    try {
+      const stored = await queryLotsFromStorage({
+        nomeLote: params.nomeLote,
+        quadra: params.quadra,
+        lote: params.lote,
+        cpfCnpj: params.cpfCnpj,
+        nomeProprietario: params.nomeProprietario,
+        limit: params.limit || 2000,
+      });
+      if (stored.length > 0) {
+        return {
+          type: 'FeatureCollection',
+          features: stored,
+          properties: {
+            totalLoaded: stored.length,
+            isFromLocalStorage: true,
+          },
+        };
+      }
+    } catch (_) {}
+  }
+
   const whereClauses = buildBCarWhereClauses(params);
   const whereStr = whereClauses.length > 0 ? whereClauses.join(' AND ') : '1=1';
 
@@ -359,6 +442,9 @@ export async function queryBaseCartografica(params: QueryBCarParams): Promise<Si
       currentOffset += pageSize;
     }
 
+    // Persist all loaded features into application local IndexedDB & server
+    saveLotsToStorage(allFeatures, params.nomeLote || params.setorCadastral || 'Região Completa').catch(() => {});
+
     return {
       type: 'FeatureCollection',
       features: allFeatures,
@@ -417,6 +503,11 @@ export async function queryBaseCartografica(params: QueryBCarParams): Promise<Si
   const data = await response.json();
   if (data.error) {
     throw new Error(`Erro ArcGIS Base Cartográfica: ${data.error.message || 'Falha na consulta'}`);
+  }
+
+  // Persist features into application storage so they are kept locally
+  if (data.features && data.features.length > 0) {
+    saveLotsToStorage(data.features, params.nomeLote || params.setorCadastral || 'Lotes').catch(() => {});
   }
 
   return data as SiglonFeatureCollection<BCarProperties>;

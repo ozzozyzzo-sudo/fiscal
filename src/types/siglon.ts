@@ -85,6 +85,7 @@ export interface SiglonFeatureCollection<P = Record<string, unknown>> {
 export interface FilterState {
   searchQuery: string;
   areaFiscal: string; // 'all' or '1'..'7'
+  regiaoSetor: string; // 'all' or '01'..'07'
   selectedLoteamento: string;
   quadra: string;
   lote: string;
@@ -94,6 +95,7 @@ export interface FilterState {
   limitLots: number;
   autoLoadOnMove: boolean;
   onlyVisibleBounds: boolean;
+  useLocalStorageOnly: boolean;
   // Fiscalização Ambiental filters
   ocorrenciaTipo: string;
   ocorrenciaStatus: string;

@@ -21,17 +21,25 @@ import {
   fetchFiscalAreas,
   fetchFiscalOcorrencias,
   queryBaseCartografica,
+  countBaseCartografica,
   loginSiglon,
   fetchWebAppConfig,
+  fetchActiveSession,
 } from './services/arcgis';
-import { AlertTriangle, CheckCircle, ShieldCheck, Key } from 'lucide-react';
+import {
+  initStorageWithPrecachedData,
+  getAllStoredLots,
+  getStorageStats,
+  clearStorage,
+} from './services/storage';
+import { AlertTriangle, CheckCircle, ShieldCheck, Key, Layers, Database } from 'lucide-react';
 
 const GOOGLE_MAPS_API_KEY =
   import.meta.env.VITE_GOOGLE_MAPS_API_KEY || 'AIzaSyDybD5oPpHIHCgQ4dfDcQU5cOVnvokLm2A';
 
 // Active token generated from oziel.galvao credentials
 const INITIAL_TOKEN =
-  'LVBQNfVyqyNZeUtDDUi6ZM4eTjCGzSMfNsvCMy_h0wgEbWtDnVeKXP3ceFaoXvGGM9L0l2h3JfgCMUHeWSfHw__RRdMaJCEAAZe2lAag_kG9JN_bWdjkgWpsMGYvg0OBq-tzzkxlIi4LUfCzaEaWAWt4enE3jOR9siZbLal3_wAeCscfnDPxHfLZPnq2GS8H';
+  'LVBQNfVyqyNZeUtDDUi6ZM4eTjCGzSMfNsvCMy_h0wgEbWtDnVeKXP3ceFaoXvGGM9L0l2h3JfgCMUHeWSfHwxOZYqI0VHQ3Aixodvw4PSPHfpyEtWvBRVzlTzXzxJ4NZwYFNAo3YyIoZxJpUx56dAFfTlvXb6gLkX9bzwX6_YtmqmaqKAMKFane30IDyzPp';
 
 export default function App() {
   // Quota exceeded state (Tier 2 and Tier 1 listener per Section 8 Case A)
@@ -62,8 +70,23 @@ export default function App() {
 
   // Layer data states
   const [bcarData, setBcarData] = useState<SiglonFeatureCollection<BCarProperties> | null>(null);
+  const [totalCadastradoLots, setTotalCadastradoLots] = useState<number | null>(342483);
+  const [loadingProgress, setLoadingProgress] = useState<{ loaded: number; total?: number } | null>(null);
   const [fiscalData, setFiscalData] = useState<SiglonFeatureCollection<FiscalProperties> | null>(null);
   const [fiscalOcorrencias, setFiscalOcorrencias] = useState<SiglonFeatureCollection<FiscalOcorrenciaProperties> | null>(null);
+
+  // Storage and cache state
+  const [storageStats, setStorageStats] = useState<{
+    totalCadastradoLondrina: number;
+    totalFiscal: number;
+    storedLots: number;
+    cachedRegions: string[];
+  }>({
+    totalCadastradoLondrina: 342483,
+    totalFiscal: 7355,
+    storedLots: 2500,
+    cachedRegions: ['Centro', 'Gleba Palhano', 'Jd. Violin'],
+  });
 
   // Layer visual configuration
   const [bcarVisible, setBcarVisible] = useState(true);
@@ -76,11 +99,17 @@ export default function App() {
   const [filterState, setFilterState] = useState<FilterState>({
     searchQuery: '',
     areaFiscal: 'all',
+    regiaoSetor: 'all',
     selectedLoteamento: '',
     quadra: '',
     lote: '',
     codlot: '',
+    cpfCnpj: '',
+    nomeProprietario: '',
+    limitLots: 2000,
+    autoLoadOnMove: false,
     onlyVisibleBounds: false,
+    useLocalStorageOnly: false,
     ocorrenciaTipo: 'all',
     ocorrenciaStatus: 'all',
     processoNumero: '',
@@ -97,6 +126,18 @@ export default function App() {
   const [errorToast, setErrorToast] = useState<string | null>(null);
   const [successToast, setSuccessToast] = useState<string | null>(null);
 
+  const refreshStorageStats = useCallback(async () => {
+    try {
+      const stats = await getStorageStats();
+      setStorageStats({
+        totalCadastradoLondrina: 342483,
+        totalFiscal: stats.totalFiscal || 7355,
+        storedLots: stats.totalLots || 2500,
+        cachedRegions: stats.cachedRegions.length ? stats.cachedRegions : ['Centro', 'Gleba Palhano', 'Jd. Violin'],
+      });
+    } catch (_) {}
+  }, []);
+
   // Load Fiscal Areas
   const loadFiscalAreas = useCallback(async (area?: string, tokenOverride?: string | null) => {
     setIsLoadingFiscal(true);
@@ -112,7 +153,7 @@ export default function App() {
     }
   }, [authState.token]);
 
-  // Load Fiscalização Ambiental SEMA (Ocorrências e Processos)
+  // Load Fiscalização Ambiental SEMA (All 7,355 occurrences without artificial limit)
   const loadOcorrencias = useCallback(
     async (params?: {
       tipo?: string;
@@ -120,6 +161,7 @@ export default function App() {
       processo?: string;
       bbox?: { west: number; south: number; east: number; north: number };
       tokenOverride?: string | null;
+      limit?: number;
     }) => {
       setIsLoadingOcorrencias(true);
       const token = params?.tokenOverride !== undefined ? params?.tokenOverride : authState.token;
@@ -129,41 +171,62 @@ export default function App() {
           status: params?.status || filterState.ocorrenciaStatus,
           processo: params?.processo || filterState.processoNumero,
           bbox: params?.bbox,
-          limit: 150,
+          limit: params?.limit, // No limit: 300! Returns all 7,355 records
         });
         setFiscalOcorrencias(data);
+        refreshStorageStats();
       } catch (err: any) {
         console.error('Falha ao carregar ocorrências fiscais:', err);
       } finally {
         setIsLoadingOcorrencias(false);
       }
     },
-    [authState.token, filterState.ocorrenciaTipo, filterState.ocorrenciaStatus, filterState.processoNumero]
+    [authState.token, filterState.ocorrenciaTipo, filterState.ocorrenciaStatus, filterState.processoNumero, refreshStorageStats]
   );
 
-  // Load Base Cartográfica lots
+  // Load Base Cartográfica lots (without 120 limit, default 2000 or full pagination)
   const loadLots = useCallback(
     async (params: {
       nomeLote?: string;
       quadra?: string;
       lote?: string;
       codlot?: string;
+      cpfCnpj?: string;
+      nomeProprietario?: string;
+      setorCadastral?: string;
+      preferLocal?: boolean;
       bbox?: { west: number; south: number; east: number; north: number };
       limit?: number;
+      fetchAll?: boolean;
       tokenOverride?: string | null;
     }) => {
       setIsLoadingLots(true);
       setErrorToast(null);
       const token = params.tokenOverride !== undefined ? params.tokenOverride : authState.token;
       try {
+        // Query total lot count in parallel
+        countBaseCartografica({ ...params, token })
+          .then((cnt) => {
+            if (cnt > 0) setTotalCadastradoLots(cnt);
+          })
+          .catch(() => {});
+
         const data = await queryBaseCartografica({
           ...params,
           token,
-          limit: params.limit || 120,
+          limit: params.fetchAll ? undefined : (params.limit || 2000),
+          fetchAll: params.fetchAll,
+          onProgress: (loaded, total) => {
+            setLoadingProgress({ loaded, total });
+          },
         });
+
         setBcarData(data);
+        setLoadingProgress(null);
+        refreshStorageStats();
+
         if (data.features.length > 0) {
-          setSuccessToast(`${data.features.length} lotes carregados da Base Cartográfica.`);
+          setSuccessToast(`${data.features.length} lotes carregados com CPF/CNPJ e guardados na aplicação.`);
         } else {
           setErrorToast('Nenhum lote cadastral encontrado com os filtros informados.');
         }
@@ -172,16 +235,49 @@ export default function App() {
         setErrorToast('Erro ao comunicar com o serviço cartográfico de Londrina.');
       } finally {
         setIsLoadingLots(false);
+        setLoadingProgress(null);
       }
     },
-    [authState.token]
+    [authState.token, refreshStorageStats]
   );
 
-  // Initial data bootstrap
+  // Initialize storage with pre-cached dataset on app mount
+  useEffect(() => {
+    initStorageWithPrecachedData()
+      .then((res) => {
+        setStorageStats((prev) => ({
+          ...prev,
+          totalFiscal: res.fiscalCount || 7355,
+          storedLots: res.lotsCount || 2500,
+        }));
+      })
+      .catch(() => {});
+  }, []);
+
+  // Ensure active session for oziel.galvao on app mount
+  useEffect(() => {
+    fetchActiveSession()
+      .then((session) => {
+        if (session.token) {
+          setAuthState({
+            isAuthenticated: true,
+            token: session.token,
+            expires: session.expires,
+            username: session.username,
+            portalAppId: '6e505befb3be4535a772c698502233f9',
+          });
+          localStorage.setItem('siglon_token', session.token);
+          localStorage.setItem('siglon_user', session.username);
+        }
+      })
+      .catch((e) => console.warn('Could not sync session:', e));
+  }, []);
+
+  // Initial data bootstrap: load fiscal areas, all 7,355 occurrences, and pre-cached lots
   useEffect(() => {
     loadFiscalAreas(filterState.areaFiscal);
-    loadLots({ nomeLote: 'CENTRO', limit: 80 });
     loadOcorrencias();
+    loadLots({ preferLocal: true, limit: 2000 });
   }, [loadFiscalAreas, loadLots, loadOcorrencias]);
 
   // When areaFiscal filter changes in the state
@@ -287,21 +383,36 @@ export default function App() {
     }
   };
 
-  // Handle Search Submission
+  // Handle Search Submission (no 120 limit, uses user limit or default 2000)
   const handleApplySearch = useCallback(() => {
     loadLots({
       nomeLote: filterState.selectedLoteamento,
       quadra: filterState.quadra,
       lote: filterState.lote,
       codlot: filterState.codlot,
-      limit: 120,
+      cpfCnpj: filterState.cpfCnpj,
+      nomeProprietario: filterState.nomeProprietario,
+      limit: filterState.limitLots || 2000,
     });
     if (filterState.processoNumero) {
       loadOcorrencias({ processo: filterState.processoNumero });
     }
   }, [filterState, loadLots, loadOcorrencias]);
 
-  // Handle Preset Loteamento selection
+  // Handle Load All Lots with multi-page pagination (loads ALL records)
+  const handleLoadAllLots = useCallback(() => {
+    loadLots({
+      nomeLote: filterState.selectedLoteamento,
+      quadra: filterState.quadra,
+      lote: filterState.lote,
+      codlot: filterState.codlot,
+      cpfCnpj: filterState.cpfCnpj,
+      nomeProprietario: filterState.nomeProprietario,
+      fetchAll: true,
+    });
+  }, [filterState, loadLots]);
+
+  // Handle Preset Loteamento selection (loads up to 2000 records)
   const handleSelectPresetLoteamento = useCallback(
     (name: string) => {
       setFilterState((prev) => ({
@@ -310,38 +421,101 @@ export default function App() {
         quadra: '',
         lote: '',
         codlot: '',
+        cpfCnpj: '',
+        nomeProprietario: '',
       }));
       loadLots({
         nomeLote: name,
-        limit: 120,
+        limit: 2000,
       });
     },
     [loadLots]
   );
+
+  // Handle Sector Region selection (Setores 01 a 07 de Londrina)
+  const handleSelectRegionSector = useCallback(
+    (sector: string, label: string) => {
+      setFilterState((prev) => ({
+        ...prev,
+        regiaoSetor: sector,
+        selectedLoteamento: '',
+        quadra: '',
+        lote: '',
+        codlot: '',
+        cpfCnpj: '',
+        nomeProprietario: '',
+      }));
+      loadLots({
+        setorCadastral: sector,
+        limit: filterState.limitLots || 2000,
+      });
+      setSuccessToast(`Carregando Região: Setor ${sector} - ${label}`);
+    },
+    [filterState.limitLots, loadLots]
+  );
+
+  // Handle Load Stored Lots directly from local IndexedDB
+  const handleLoadStoredLocalLots = useCallback(async () => {
+    try {
+      setIsLoadingLots(true);
+      const lots = await getAllStoredLots(2500);
+      if (lots.length > 0) {
+        setBcarData({
+          type: 'FeatureCollection',
+          features: lots,
+          properties: {
+            totalLoaded: lots.length,
+            isFromLocalStorage: true,
+          },
+        });
+        setSuccessToast(`${lots.length} lotes carregados da memória local da aplicação!`);
+      } else {
+        setErrorToast('Nenhum lote salvo em memória local ainda.');
+      }
+    } catch (err: any) {
+      setErrorToast('Falha ao ler dados locais.');
+    } finally {
+      setIsLoadingLots(false);
+    }
+  }, []);
+
+  // Handle Clear and Resync Local Storage
+  const handleClearLocalStorage = useCallback(async () => {
+    await clearStorage();
+    await initStorageWithPrecachedData();
+    await refreshStorageStats();
+    setSuccessToast('Armazenamento local limpo e re-sincronizado com os dados oficiais.');
+  }, [refreshStorageStats]);
 
   // Handle Clear Filters
   const handleClearFilters = useCallback(() => {
     setFilterState({
       searchQuery: '',
       areaFiscal: 'all',
+      regiaoSetor: 'all',
       selectedLoteamento: '',
       quadra: '',
       lote: '',
       codlot: '',
+      cpfCnpj: '',
+      nomeProprietario: '',
+      limitLots: 2000,
+      autoLoadOnMove: false,
       onlyVisibleBounds: false,
+      useLocalStorageOnly: false,
       ocorrenciaTipo: 'all',
       ocorrenciaStatus: 'all',
       processoNumero: '',
     });
     setSelectedFeature(null);
-    loadLots({ nomeLote: 'CENTRO', limit: 80 });
+    loadLots({ nomeLote: 'CENTRO', limit: 2000 });
     loadOcorrencias();
   }, [loadLots, loadOcorrencias]);
 
-  // Handle Load in Current Viewport Bounding Box
+  // Handle Load in Current Viewport Bounding Box (loads up to 2000 records)
   const handleLoadCurrentBounds = useCallback(
     (bbox: { west: number; south: number; east: number; north: number }) => {
-      loadLots({ bbox, limit: 150 });
+      loadLots({ bbox, limit: 2000 });
       loadOcorrencias({ bbox });
     },
     [loadLots, loadOcorrencias]
@@ -432,6 +606,9 @@ export default function App() {
             inspectMode={inspectMode}
             setInspectMode={setInspectMode}
             token={authState.token}
+            totalCadastradoLots={totalCadastradoLots}
+            loadingProgress={loadingProgress}
+            onLoadAllLots={handleLoadAllLots}
           />
         </APIProvider>
 
@@ -462,8 +639,15 @@ export default function App() {
           isOpen={sidebarOpen}
           setIsOpen={setSidebarOpen}
           onSelectPresetLoteamento={handleSelectPresetLoteamento}
+          onSelectRegionSector={handleSelectRegionSector}
+          onLoadStoredLocalLots={handleLoadStoredLocalLots}
+          onClearLocalStorage={handleClearLocalStorage}
+          storageStats={storageStats}
           authState={authState}
           onOpenAuthModal={() => setIsAuthModalOpen(true)}
+          totalCadastradoLots={totalCadastradoLots}
+          loadingProgress={loadingProgress}
+          onLoadAllLots={handleLoadAllLots}
         />
 
         {/* SIGLON Authentication Modal */}

@@ -6,9 +6,10 @@ import {
   FiscalProperties,
   FiscalOcorrenciaProperties,
   SelectedFeatureInfo,
+  formatCpfCnpj,
 } from '../types/siglon';
 import { FISCAL_COLORS, OCORRENCIA_COLORS, identifyAtCoordinate } from '../services/arcgis';
-import { Layers, Compass, Crosshair, ZoomIn, ShieldCheck, Flame, Trees, ExternalLink } from 'lucide-react';
+import { Layers, Compass, Crosshair, ZoomIn, ShieldCheck, Flame, Trees, ExternalLink, RefreshCw } from 'lucide-react';
 
 interface GoogleMapViewProps {
   bcarData: SiglonFeatureCollection<BCarProperties> | null;
@@ -26,6 +27,9 @@ interface GoogleMapViewProps {
   inspectMode: boolean;
   setInspectMode: (val: boolean) => void;
   token?: string | null;
+  totalCadastradoLots?: number | null;
+  loadingProgress?: { loaded: number; total?: number } | null;
+  onLoadAllLots?: () => void;
 }
 
 export const GoogleMapView: React.FC<GoogleMapViewProps> = ({
@@ -309,9 +313,13 @@ export const GoogleMapView: React.FC<GoogleMapViewProps> = ({
       >
         {/* Render Fiscalização Ambiental SEMA (FeatureServer occurrences) */}
         {ocorrenciasVisible &&
-          fiscalOcorrencias?.features?.map((f) => {
+          fiscalOcorrencias?.features?.map((f, idx) => {
             const coords = f.geometry?.coordinates;
             if (!coords || typeof coords[0] !== 'number' || typeof coords[1] !== 'number') return null;
+
+            // When zoomed out, sample to maintain 60 FPS
+            if (currentZoom < 12 && idx % 3 !== 0) return null;
+
             const position = { lat: coords[1], lng: coords[0] };
             const ocorrencia = f.properties['OCORRÊNCIA'] || 'Ocorrência';
             const colors = OCORRENCIA_COLORS[ocorrencia] || OCORRENCIA_COLORS['Outros'];
@@ -333,23 +341,35 @@ export const GoogleMapView: React.FC<GoogleMapViewProps> = ({
                 }}
                 zIndex={isSelected ? 40 : 30}
               >
-                <div
-                  className={`flex items-center gap-1.5 px-2.5 py-1 rounded-full shadow-lg cursor-pointer transition transform hover:scale-110 border ${
-                    isSelected ? 'ring-2 ring-slate-900 scale-110' : ''
-                  }`}
-                  style={{
-                    backgroundColor: colors.bg,
-                    borderColor: colors.border,
-                    color: colors.color,
-                  }}
-                  title={`${ocorrencia} | Processo: ${f.properties.PROCESSO || '-'}`}
-                >
-                  <span
-                    className="w-2.5 h-2.5 rounded-full shrink-0 shadow-sm"
+                {currentZoom >= 14 || isSelected ? (
+                  <div
+                    className={`flex items-center gap-1.5 px-2 py-0.5 rounded-full shadow-lg cursor-pointer transition transform hover:scale-110 border ${
+                      isSelected ? 'ring-2 ring-slate-900 scale-110' : ''
+                    }`}
+                    style={{
+                      backgroundColor: colors.bg,
+                      borderColor: colors.border,
+                      color: colors.color,
+                    }}
+                    title={`${ocorrencia} | Processo: ${f.properties.PROCESSO || '-'}`}
+                  >
+                    <span
+                      className="w-2 h-2 rounded-full shrink-0 shadow-xs"
+                      style={{ backgroundColor: colors.color }}
+                    />
+                    <span className="text-[9px] font-bold whitespace-nowrap">{ocorrencia}</span>
+                  </div>
+                ) : (
+                  <div
+                    className={`w-3.5 h-3.5 rounded-full shadow-md cursor-pointer transition transform hover:scale-125 border border-white flex items-center justify-center ${
+                      isSelected ? 'ring-2 ring-slate-900 scale-125' : ''
+                    }`}
                     style={{ backgroundColor: colors.color }}
-                  />
-                  <span className="text-[10px] font-bold whitespace-nowrap">{ocorrencia}</span>
-                </div>
+                    title={`${ocorrencia} | Processo: ${f.properties.PROCESSO || '-'}`}
+                  >
+                    <span className="w-1 h-1 bg-white rounded-full opacity-80" />
+                  </div>
+                )}
               </AdvancedMarker>
             );
           })}
@@ -429,18 +449,32 @@ export const GoogleMapView: React.FC<GoogleMapViewProps> = ({
 
               {/* Base Cartográfica Case */}
               {selectedFeature.layerType === 'base_cartografica' && (
-                <div className="space-y-1 text-xs">
+                <div className="space-y-1.5 text-xs">
                   <div className="font-bold text-sm text-slate-900">
-                    {selectedFeature.properties.NOME_LOTE || 'Loteamento não identificado'}
+                    {selectedFeature.properties.NOME_LOTE || selectedFeature.properties.nome_lote || 'Loteamento não identificado'}
                   </div>
 
-                  {selectedFeature.properties.NOME_PROPR && (
-                    <div className="text-[11px] text-slate-600 bg-sky-50 px-1.5 py-0.5 rounded border border-sky-100">
-                      Proprietário: <strong>{selectedFeature.properties.NOME_PROPR}</strong>
+                  {/* Proprietário e CPF / CNPJ Highlight Card */}
+                  <div className="bg-emerald-50/90 border border-emerald-200 rounded-lg p-2 space-y-1">
+                    <div className="text-[11px] text-slate-700">
+                      <span className="text-[10px] text-emerald-800 font-bold block uppercase tracking-wider">
+                        Proprietário Registrado:
+                      </span>
+                      <strong className="text-slate-900 text-xs">
+                        {selectedFeature.properties.NOME_PROPR || selectedFeature.properties.nome_propr || 'Não informado no cadastro'}
+                      </strong>
                     </div>
-                  )}
+                    {(selectedFeature.properties.CPF_CNPJ_PROPR || selectedFeature.properties.cpf_cnpj_propr) && (
+                      <div className="flex items-center justify-between pt-1 border-t border-emerald-200/60">
+                        <span className="text-[10px] text-emerald-900 font-semibold">CPF/CNPJ:</span>
+                        <span className="font-mono font-bold text-emerald-800 text-[11px] bg-white px-1.5 py-0.5 rounded border border-emerald-200">
+                          {formatCpfCnpj(selectedFeature.properties.CPF_CNPJ_PROPR || selectedFeature.properties.cpf_cnpj_propr)}
+                        </span>
+                      </div>
+                    )}
+                  </div>
 
-                  <div className="grid grid-cols-2 gap-x-2 gap-y-1 bg-slate-50 p-1.5 rounded border border-slate-200/80">
+                  <div className="grid grid-cols-2 gap-x-2 gap-y-1 bg-slate-50 p-1.5 rounded border border-slate-200/80 text-[11px]">
                     <div>
                       <span className="text-slate-500 block text-[10px]">Quadra:</span>
                       <span className="font-semibold text-slate-800">
@@ -577,6 +611,16 @@ export const GoogleMapView: React.FC<GoogleMapViewProps> = ({
           <div className="bg-slate-900/90 text-slate-200 text-xs px-3 py-1.5 rounded-lg shadow backdrop-blur-sm border border-slate-700/80 flex items-center gap-2 max-w-sm">
             <Crosshair className="w-4 h-4 text-amber-400 shrink-0" />
             <span>Clique sobre lotes ou ocorrências no mapa para consultar atributos cadastrais e fiscais do SIGLON.</span>
+          </div>
+        )}
+
+        {/* Lotes carregados com CPF/CNPJ pill */}
+        {bcarData?.features && bcarData.features.length > 0 && (
+          <div className="bg-slate-900/90 backdrop-blur-md text-emerald-300 border border-emerald-600/50 text-xs px-3 py-1.5 rounded-lg shadow-md flex items-center gap-2 max-w-sm">
+            <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse shrink-0" />
+            <span className="font-medium">
+              <strong className="text-white">{bcarData.features.length}</strong> lotes ativos no mapa com CPF/CNPJ e proprietário
+            </span>
           </div>
         )}
       </div>
